@@ -1,0 +1,16 @@
+cs news
+=======
+
+
+cs HEAD
+-------
+Release date: TBA
+
+Based on ccache: TBA
+
+
+New features and improvements
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    - Initial Cloud Cache support
+    - Machine indendent Toolchain IDs

@@ -1,0 +1,629 @@
+/*
+ * Copyright (C) 2011-2012 Joel Rosdahl
+ * Copyright (C) 2012 Mentor Graphics Corporation
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 3 of the License, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program; if not, write to the Free Software Foundation, Inc., 51
+ * Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+#include "conf.h"
+#include "ccache.h"
+
+typedef bool (*conf_item_parser)(const char *str, void *result, char **errmsg);
+typedef bool (*conf_item_verifier)(void *value, char **errmsg);
+
+struct conf_item {
+	const char *name;
+	size_t number;
+	conf_item_parser parser;
+	size_t offset;
+	conf_item_verifier verifier;
+};
+
+struct env_to_conf_item {
+	const char *env_name;
+	const char *conf_name;
+};
+
+static bool
+parse_bool(const char *str, void *result, char **errmsg)
+{
+	bool *value = (bool *)result;
+
+	if (str_eq(str, "true")) {
+		*value = true;
+		return true;
+	} else if (str_eq(str, "false")) {
+		*value = false;
+		return true;
+	} else {
+		*errmsg = format("not a boolean value: \"%s\"", str);
+		return false;
+	}
+}
+
+static bool
+parse_env_string(const char *str, void *result, char **errmsg)
+{
+	char **value = (char **)result;
+	free(*value);
+	*value = subst_env_in_string(str, errmsg);
+	return *value != NULL;
+}
+
+static bool
+parse_size(const char *str, void *result, char **errmsg)
+{
+	uint64_t *value = (uint64_t *)result;
+	uint64_t size;
+	*errmsg = NULL;
+	if (parse_size_with_suffix(str, &size)) {
+		*value = size;
+		return true;
+	} else {
+		*errmsg = format("invalid size: \"%s\"", str);
+		return false;
+	}
+}
+
+static bool
+parse_sloppiness(const char *str, void *result, char **errmsg)
+{
+	unsigned *value = (unsigned *)result;
+	char *word, *p, *q, *saveptr = NULL;
+
+	if (!str) {
+		return *value;
+	}
+	p = x_strdup(str);
+	q = p;
+	while ((word = strtok_r(q, ", ", &saveptr))) {
+		if (str_eq(word, "file_macro")) {
+			*value |= SLOPPY_FILE_MACRO;
+		} else if (str_eq(word, "include_file_mtime")) {
+			*value |= SLOPPY_INCLUDE_FILE_MTIME;
+		} else if (str_eq(word, "time_macros")) {
+			*value |= SLOPPY_TIME_MACROS;
+		} else {
+			*errmsg = format("unknown sloppiness: \"%s\"", word);
+			free(p);
+			return false;
+		}
+		q = NULL;
+	}
+	free(p);
+	return true;
+}
+
+static bool
+parse_string(const char *str, void *result, char **errmsg)
+{
+	char **value = (char **)result;
+	(void)errmsg;
+	free(*value);
+	*value = x_strdup(str);
+	return true;
+}
+
+static bool
+parse_umask(const char *str, void *result, char **errmsg)
+{
+	unsigned *value = (unsigned *)result;
+	char *endptr;
+	if (str_eq(str, "")) {
+		*value = UINT_MAX;
+		return true;
+	}
+	errno = 0;
+	*value = strtoul(str, &endptr, 8);
+	if (errno == 0 && *str != '\0' && *endptr == '\0') {
+		return true;
+	} else {
+		*errmsg = format("not an octal integer: \"%s\"", str);
+		return false;
+	}
+}
+
+static bool
+parse_unsigned(const char *str, void *result, char **errmsg)
+{
+	unsigned *value = (unsigned *)result;
+	long x;
+	char *endptr;
+	errno = 0;
+	x = strtol(str, &endptr, 10);
+	if (errno == 0 && x >= 0 && *str != '\0' && *endptr == '\0') {
+		*value = x;
+		return true;
+	} else {
+		*errmsg = format("invalid unsigned integer: \"%s\"", str);
+		return false;
+	}
+}
+
+static bool
+verify_absolute_path(void *value, char **errmsg)
+{
+	char **path = (char **)value;
+	assert(*path);
+	if (str_eq(*path, "")) {
+		/* The empty string means "disable" in this case. */
+		return true;
+	} else if (is_absolute_path(*path)) {
+		return true;
+	} else {
+		*errmsg = format("not an absolute path: \"%s\"", *path);
+		return false;
+	}
+}
+
+static bool
+verify_dir_levels(void *value, char **errmsg)
+{
+	unsigned *levels = (unsigned *)value;
+	assert(levels);
+	if (*levels >= 1 && *levels <= 8) {
+		return true;
+	} else {
+		*errmsg = format("cache directory levels must be between 1 and 8");
+		return false;
+	}
+}
+
+#define ITEM(name, type) \
+	parse_##type, offsetof(struct conf, name), NULL
+#define ITEM_V(name, type, verification) \
+	parse_##type, offsetof(struct conf, name), verify_##verification
+
+#include "confitems_lookup.c"
+#include "envtoconfitems_lookup.c"
+
+static const struct conf_item *
+find_conf(const char *name)
+{
+	return confitems_get(name, strlen(name));
+}
+
+static const struct env_to_conf_item *
+find_env_to_conf(const char *name)
+{
+	return envtoconfitems_get(name, strlen(name));
+}
+
+static bool
+handle_conf_setting(struct conf *conf, const char *key, const char *value,
+                    char **errmsg, bool from_env_variable, bool negate_boolean,
+                    const char *origin)
+{
+	const struct conf_item *item;
+
+	item = find_conf(key);
+	if (!item) {
+		*errmsg = format("unknown configuration option \"%s\"", key);
+		return false;
+	}
+
+	if (from_env_variable && item->parser == parse_bool) {
+		/*
+		 * Special rule for boolean settings from the environment: any value means
+		 * true.
+		 */
+		bool *value = (bool *)((char *)conf + item->offset);
+		*value = !negate_boolean;
+		goto out;
+	}
+
+	if (!item->parser(value, (char *)conf + item->offset, errmsg)) {
+		return false;
+	}
+	if (item->verifier && !item->verifier((char *)conf + item->offset, errmsg)) {
+		return false;
+	}
+
+out:
+	conf->item_origins[item->number] = origin;
+	return true;
+}
+
+static bool
+parse_line(const char *line, char **key, char **value, char **errmsg)
+{
+	const char *p, *q;
+
+#define SKIP_WS(x) while (isspace(*x)) { ++x; }
+
+	*key = NULL;
+	*value = NULL;
+
+	p = line;
+	SKIP_WS(p);
+	if (*p == '\0' || *p == '#') {
+		return true;
+	}
+	q = p;
+	while (isalpha(*q) || *q == '_') {
+		++q;
+	}
+	*key = x_strndup(p, q - p);
+	p = q;
+	SKIP_WS(p);
+	if (*p != '=') {
+		*errmsg = x_strdup("missing equal sign");
+		free(*key);
+		*key = NULL;
+		return false;
+	}
+	++p;
+
+	/* Skip leading whitespace. */
+	SKIP_WS(p);
+	q = p;
+	while (*q) {
+		++q;
+	}
+	/* Skip trailing whitespace. */
+	while (isspace(q[-1])) {
+		--q;
+	}
+	*value = x_strndup(p, q - p);
+
+	return true;
+
+#undef SKIP_WS
+}
+
+/* Create a conf struct with default values. */
+struct conf *
+conf_create(void)
+{
+	size_t i;
+	struct conf *conf = x_malloc(sizeof(*conf));
+	conf->base_dir = x_strdup("");
+	conf->cache_dir = format("%s/.cscache", get_home_directory());
+	conf->cache_dir_levels = 2;
+	conf->compiler = x_strdup("");
+	conf->compiler_check = x_strdup("mtime");
+	conf->compression = false;
+	conf->compression_level = 6;
+	conf->cpp_extension = x_strdup("");
+	conf->direct_mode = true;
+	conf->disable = false;
+	conf->extra_files_to_hash = x_strdup("");
+	conf->hard_link = false;
+	conf->hash_dir = false;
+	conf->log_file = x_strdup("");
+	conf->max_files = 0;
+	conf->max_size = (uint64_t)5 * 1000 * 1000 * 1000;
+	conf->path = x_strdup("");
+	conf->prefix_command = x_strdup("");
+	conf->read_only = false;
+	conf->recache = false;
+	conf->run_second_cpp = false;
+	conf->sloppiness = 0;
+	conf->stats = true;
+	conf->temporary_dir = x_strdup("");
+	conf->umask = UINT_MAX; /* default: don't set umask */
+	conf->unify = false;
+
+	conf->cloud_server = x_strdup("api.cloudsourcery.com");
+	conf->cloud_mode = x_strdup("smart");
+	conf->cloud_user_key = x_strdup("");
+
+	conf->item_origins = x_malloc(CONFITEMS_TOTAL_KEYWORDS * sizeof(char *));
+	for (i = 0; i < CONFITEMS_TOTAL_KEYWORDS; ++i) {
+		conf->item_origins[i] = "default";
+	}
+	return conf;
+}
+
+void
+conf_free(struct conf *conf)
+{
+	if (!conf) {
+		return;
+	}
+	free(conf->base_dir);
+	free(conf->cache_dir);
+	free(conf->compiler);
+	free(conf->compiler_check);
+	free(conf->cpp_extension);
+	free(conf->extra_files_to_hash);
+	free(conf->log_file);
+	free(conf->path);
+	free(conf->prefix_command);
+	free(conf->temporary_dir);
+	free(conf->item_origins);
+	free(conf);
+}
+
+/* Note: The path pointer is stored in conf, so path must outlive conf. */
+bool
+conf_read(struct conf *conf, const char *path, char **errmsg)
+{
+	FILE *f;
+	char buf[10000];
+	bool result = true;
+	unsigned line_number;
+
+	assert(errmsg);
+	*errmsg = NULL;
+
+	f = fopen(path, "r");
+	if (!f) {
+		*errmsg = format("%s: %s", path, strerror(errno));
+		return false;
+	}
+
+	line_number = 0;
+	while (fgets(buf, sizeof(buf), f)) {
+		char *errmsg2, *key, *value;
+		bool ok;
+		++line_number;
+		ok = parse_line(buf, &key, &value, &errmsg2);
+		if (ok && key) { /* key == NULL if comment or blank line */
+			ok = handle_conf_setting(conf, key, value, &errmsg2, false, false, path);
+		}
+		free(key);
+		free(value);
+		if (!ok) {
+			*errmsg = format("%s:%u: %s", path, line_number, errmsg2);
+			free(errmsg2);
+			result = false;
+			goto out;
+		}
+	}
+	if (ferror(f)) {
+		*errmsg = x_strdup(strerror(errno));
+		result = false;
+	}
+
+out:
+	fclose(f);
+	return result;
+}
+
+bool
+conf_update_from_environment(struct conf *conf, char **errmsg)
+{
+	char **p;
+	char *q;
+	char *key;
+	char *errmsg2;
+	const struct env_to_conf_item *env_to_conf_item;
+	bool negate;
+	size_t key_start;
+
+	for (p = environ; *p; ++p) {
+		if (!str_startswith(*p, "CS_")) {
+			continue;
+		}
+		q = strchr(*p, '=');
+		if (!q) {
+			continue;
+		}
+
+		if (str_startswith(*p + 3, "NO")) {
+			negate = true;
+			key_start = 5;
+		} else {
+			negate = false;
+			key_start = 3;
+		}
+		key = x_strndup(*p + key_start, q - *p - key_start);
+
+		++q; /* Now points to the value. */
+
+		env_to_conf_item = find_env_to_conf(key);
+		if (!env_to_conf_item) {
+			free(key);
+			continue;
+		}
+
+		if (!handle_conf_setting(
+			    conf, env_to_conf_item->conf_name, q, &errmsg2, true, negate,
+			    "environment")) {
+			*errmsg = format("%s: %s", key, errmsg2);
+			free(errmsg2);
+			free(key);
+			return false;
+		}
+
+		free(key);
+	}
+
+	return true;
+}
+
+bool
+conf_set_value_in_file(const char *path, const char *key, const char *value,
+                       char **errmsg)
+{
+	FILE *infile, *outfile;
+	char *outpath;
+	char buf[10000];
+	bool found;
+	const struct conf_item *item;
+
+	item = find_conf(key);
+	if (!item) {
+		*errmsg = format("unknown configuration option \"%s\"", key);
+		return false;
+	}
+
+	infile = fopen(path, "r");
+	if (!infile) {
+		*errmsg = format("%s: %s", path, strerror(errno));
+		return false;
+	}
+
+	outpath = format("%s.tmp.%s", path, tmp_string());
+	outfile = fopen(outpath, "w");
+	if (!outfile) {
+		*errmsg = format("%s: %s", outpath, strerror(errno));
+		free(outpath);
+		fclose(infile);
+		return false;
+	}
+
+	found = false;
+	while (fgets(buf, sizeof(buf), infile)) {
+		char *errmsg2, *key2, *value2;
+		bool ok;
+		ok = parse_line(buf, &key2, &value2, &errmsg2);
+		if (ok && key2 && str_eq(key2, key)) {
+			found = true;
+			fprintf(outfile, "%s = %s\n", key, value);
+		} else {
+			fputs(buf, outfile);
+		}
+		free(key2);
+		free(value2);
+	}
+
+	if (!found) {
+		fprintf(outfile, "%s = %s\n", key, value);
+	}
+
+	fclose(infile);
+	fclose(outfile);
+	if (x_rename(outpath, path) != 0) {
+		*errmsg = format("rename %s to %s: %s", outpath, path, strerror(errno));
+		return false;
+	}
+	free(outpath);
+
+	return true;
+}
+
+bool
+conf_print_items(struct conf *conf,
+                 void (*printer)(const char *descr, const char *origin,
+                                 void *context),
+                 void *context)
+{
+	char *s = x_strdup("");
+	char *s2;
+
+	reformat(&s, "base_dir = %s", conf->base_dir);
+	printer(s, conf->item_origins[find_conf("base_dir")->number], context);
+
+	reformat(&s, "cache_dir = %s", conf->cache_dir);
+	printer(s, conf->item_origins[find_conf("cache_dir")->number], context);
+
+	reformat(&s, "cache_dir_levels = %u", conf->cache_dir_levels);
+	printer(s, conf->item_origins[find_conf("cache_dir_levels")->number],
+	        context);
+
+	reformat(&s, "compiler = %s", conf->compiler);
+	printer(s, conf->item_origins[find_conf("compiler")->number], context);
+
+	reformat(&s, "compiler_check = %s", conf->compiler_check);
+	printer(s, conf->item_origins[find_conf("compiler_check")->number], context);
+
+	reformat(&s, "compression = %s", conf->compression ? "true" : "false");
+	printer(s, conf->item_origins[find_conf("compression")->number], context);
+
+	reformat(&s, "compression_level = %u", conf->compression_level);
+	printer(s, conf->item_origins[find_conf("compression_level")->number],
+	        context);
+
+	reformat(&s, "cpp_extension = %s", conf->cpp_extension);
+	printer(s, conf->item_origins[find_conf("cpp_extension")->number], context);
+
+	reformat(&s, "direct_mode = %s", conf->direct_mode ? "true" : "false");
+	printer(s, conf->item_origins[find_conf("direct_mode")->number], context);
+
+	reformat(&s, "disable = %s", conf->disable ? "true" : "false");
+	printer(s, conf->item_origins[find_conf("disable")->number], context);
+
+	reformat(&s, "extra_files_to_hash = %s", conf->extra_files_to_hash);
+	printer(s, conf->item_origins[find_conf("extra_files_to_hash")->number],
+	        context);
+
+	reformat(&s, "hard_link = %s", conf->hard_link ? "true" : "false");
+	printer(s, conf->item_origins[find_conf("hard_link")->number], context);
+
+	reformat(&s, "hash_dir = %s", conf->hash_dir ? "true" : "false");
+	printer(s, conf->item_origins[find_conf("hash_dir")->number], context);
+
+	reformat(&s, "log_file = %s", conf->log_file);
+	printer(s, conf->item_origins[find_conf("log_file")->number], context);
+
+	reformat(&s, "max_files = %u", conf->max_files);
+	printer(s, conf->item_origins[find_conf("max_files")->number], context);
+
+	s2 = format_parsable_size_with_suffix(conf->max_size);
+	reformat(&s, "max_size = %s", s2);
+	printer(s, conf->item_origins[find_conf("max_size")->number], context);
+	free(s2);
+
+	reformat(&s, "path = %s", conf->path);
+	printer(s, conf->item_origins[find_conf("path")->number], context);
+
+	reformat(&s, "prefix_command = %s", conf->prefix_command);
+	printer(s, conf->item_origins[find_conf("prefix_command")->number], context);
+
+	reformat(&s, "read_only = %s", conf->read_only ? "true" : "false");
+	printer(s, conf->item_origins[find_conf("read_only")->number], context);
+
+	reformat(&s, "recache = %s", conf->recache ? "true" : "false");
+	printer(s, conf->item_origins[find_conf("recache")->number], context);
+
+	reformat(&s, "run_second_cpp = %s", conf->run_second_cpp ? "true" : "false");
+	printer(s, conf->item_origins[find_conf("run_second_cpp")->number], context);
+
+	reformat(&s, "sloppiness = ");
+	if (conf->sloppiness & SLOPPY_FILE_MACRO) {
+		reformat(&s, "%sfile_macro, ", s);
+	}
+	if (conf->sloppiness & SLOPPY_INCLUDE_FILE_MTIME) {
+		reformat(&s, "%sinclude_file_mtime, ", s);
+	}
+	if (conf->sloppiness & SLOPPY_TIME_MACROS) {
+		reformat(&s, "%stime_macros, ", s);
+	}
+	if (conf->sloppiness) {
+		/* Strip last ", ". */
+		s[strlen(s) - 2] = '\0';
+	}
+	printer(s, conf->item_origins[find_conf("sloppiness")->number], context);
+
+	reformat(&s, "stats = %s", conf->stats ? "true" : "false");
+	printer(s, conf->item_origins[find_conf("stats")->number], context);
+
+	reformat(&s, "temporary_dir = %s", conf->temporary_dir);
+	printer(s, conf->item_origins[find_conf("temporary_dir")->number], context);
+
+	if (conf->umask == UINT_MAX) {
+		reformat(&s, "umask = ");
+	} else {
+		reformat(&s, "umask = %03o", conf->umask);
+	}
+	printer(s, conf->item_origins[find_conf("umask")->number], context);
+
+	reformat(&s, "unify = %s", conf->unify ? "true" : "false");
+	printer(s, conf->item_origins[find_conf("unify")->number], context);
+
+	reformat(&s, "cloud_server = %s", conf->cloud_server);
+	printer(s, conf->item_origins[find_conf("cloud_server")->number], context);
+
+	reformat(&s, "cloud_key = %s", conf->cloud_user_key);
+	printer(s, conf->item_origins[find_conf("cloud_key")->number], context);
+
+	reformat(&s, "cloud_mode = %s", conf->cloud_mode);
+	printer(s, conf->item_origins[find_conf("cloud_mode")->number], context);
+
+	free(s);
+	return true;
+}

@@ -1,0 +1,78 @@
+cs installation
+===============
+
+
+Building code from a release archive
+------------------------------------
+
+Prerequisites
+~~~~~~~~~~~~~
+
+To build cs, you need:
+
+- A C compiler (for instance GCC)
+
+- libcurl (for openssl).
+
+- json-c library
+
+It is also recommended that you have:
+
+- zlib <http://www.zlib.net> (if you don't have zlib installed, cs will
+  use a bundled copy)
+
+- asciidoc
+
+
+Installation
+~~~~~~~~~~~~
+
+To compile and install cs, run these commands:
+
+    ./configure
+    make
+    make install
+
+You may set the installation directory and other parameters by options to
+``./configure''. To see them, run ``./configure --help''.
+
+There are two ways to use cs. You can either prefix your compilation
+commands with ``cs'' or you can create a symbolic link (named as your
+compiler) to cs. The first method is most convenient if you just want to
+try out cs or wish to use it for some specific projects. The second method
+is most useful for when you wish to use cs for all your compilations.
+
+To install for usage by the first method just copy cs to somewhere in your
+path.
+
+To install for the second method, do something like this:
+
+    cp cs /usr/local/bin/
+    ln -s cs /usr/local/bin/gcc
+    ln -s cs /usr/local/bin/g++
+    ln -s cs /usr/local/bin/cc
+    ln -s cs /usr/local/bin/c++
+
+And so forth. This will work as long as ``/usr/local/bin'' comes before the
+path to the compiler (which is usually in ``/usr/bin''). After installing you
+may wish to run ``which gcc'' to make sure that the correct link is being used.
+
+NOTE: Do not use a hard link, use a symbolic link. A hard link will cause
+``interesting'' problems.
+
+
+Building code from the source code repository
+---------------------------------------------
+
+In addition to the prerequisites mentioned above, you also need:
+
+- AsciiDoc (http://www.methods.co.nz/asciidoc/) to build the documentation.
+- Autoconf (http://www.gnu.org/software/autoconf/)
+
+To debug and run the performance test suite you'll also need:
+
+- Perl (http://www.perl.org/)
+- Python (http://www.python.org/)
+
+Run "./autogen.sh" and then follow the steps mentioned under "Installation"
+above.

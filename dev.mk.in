@@ -1,0 +1,149 @@
+# GNU make syntax reigns in this file.
+
+all_cflags += -Werror
+all_cppflags += -MD -MP -MF .deps/$(subst .._,,$(subst /,_,$<)).d
+
+ASCIIDOC = asciidoc
+GPERF = gperf
+XSLTPROC = xsltproc
+MANPAGE_XSL = $(shell if [ -e /usr/local/etc/asciidoc/docbook-xsl/manpage.xsl ]; \
+                then echo /usr/local/etc/asciidoc/docbook-xsl/manpage.xsl; \
+                else echo /etc/asciidoc/docbook-xsl/manpage.xsl; fi)
+
+
+version := \
+    $(shell (git --git-dir=$(srcdir)/.git describe --dirty --match 'cs-*' || git --git-dir=$(srcdir)/.git describe || echo vunknown) \
+            2>/dev/null | sed -e 's/cs-v//' -e 's/-/+/' -e 's/-/_/g')
+
+dist_dir = cs-$(version)
+dist_archives = \
+    cs-$(version).tar.bz2 \
+    cs-$(version).tar.gz
+ifneq ($(shell uname), Darwin)
+    dist_archives += cs-$(version).tar.xz
+endif
+
+generated_docs = \
+    cs.1 AUTHORS.html INSTALL.html LICENSE.html MANUAL.html NEWS.html \
+    README.html
+built_dist_files = $(generated_docs)
+
+headers = \
+    ccache.h \
+    cloud.h \
+    compopt.h \
+    conf.h \
+    counters.h \
+    daemon.h \
+    getopt_long.h \
+    hashtable.h \
+    hashtable_itr.h \
+    hashtable_private.h \
+    hashutil.h \
+    language.h \
+    macroskip.h \
+    manifest.h \
+    mdfour.h \
+    murmurhashneutral2.h \
+    system.h \
+    test/framework.h \
+    test/suites.h \
+    test/util.h
+
+files_to_clean += *.tar.bz2 *.tar.gz *.tar.xz *.xml .deps/*
+files_to_distclean += $(built_dist_files) version.c test/suites.h
+files_to_distclean += .deps version.c dev.mk
+
+source_dist_files = \
+    $(base_sources) \
+    $(headers) \
+    $(test_sources) \
+    AUTHORS.txt \
+    GPL-3.0.txt \
+    HACKING.txt \
+    INSTALL.txt \
+    LICENSE.txt \
+    MANUAL.txt \
+    Makefile.in \
+    NEWS.txt \
+    README.txt \
+    autogen.sh \
+    config.guess \
+    config.h.in \
+    config.sub \
+    configure \
+    configure.ac \
+    confitems.gperf \
+    confitems_lookup.c \
+    dev.mk.in \
+    envtoconfitems.gperf \
+    envtoconfitems_lookup.c \
+    install-sh \
+    main.c \
+    test.sh \
+    zlib/*.c \
+    zlib/*.h
+
+dist_files = \
+    $(addprefix $(srcdir)/, $(source_dist_files)) \
+    $(built_dist_files)
+
+ifneq ($(shell sed 's/.*"\(.*\)".*/\1/' version.c 2>/dev/null),$(version))
+  $(shell echo 'const char CS_VERSION[] = "$(version)";' >version.c)
+endif
+version.o: version.c
+
+%_lookup.c: %.gperf
+	$(GPERF) $< >$@
+	echo "static const size_t `echo $* | tr a-z A-Z`_TOTAL_KEYWORDS = `sed -nr 's/.*TOTAL_KEYWORDS = ([0-9]+).*/\1/p' $@`;" >>$@
+
+.PHONY: dist
+dist: $(dist_archives)
+
+$(dist_archives): $(dist_files)
+	tmpdir=$$(mktemp -d /tmp/tmp-cs-dist.XXXXXX) && \
+	dir=$$tmpdir/$(dist_dir) && \
+	mkdir $$dir && \
+	(cd $(srcdir) && \
+	 rsync -r --relative $(source_dist_files) $$dir) && \
+	cp $(built_dist_files) $$dir && \
+	echo "Remove this file to enable developer mode." >$$dir/dev_mode_disabled && \
+	(cd $$tmpdir && \
+	 tarcompression= && \
+	 case $@ in \
+	     *.bz2) tarcompression=-j ;; \
+	     *.gz) tarcompression=-z ;; \
+	     *.xz) tarcompression=-J ;; \
+	 esac && \
+	 tar -c $$tarcompression -f $(CURDIR)/$@ $(dist_dir)) && \
+	rm -rf $$tmpdir
+
+.PHONY: distcheck
+distcheck: $(firstword $(dist_archives))
+	tmpdir=$$(mktemp -d /tmp/tmp-cs-distcheck.XXXXXX) && \
+	(cd $$tmpdir && \
+	 tar xjf $(CURDIR)/$< && \
+	 mkdir -p $(dist_dir)/build && \
+	 cd $(dist_dir)/build && \
+	 ../configure --prefix=$$tmpdir/root && \
+	 $(MAKE) install && \
+	 $(MAKE) installcheck) && \
+	rm -rf $$tmpdir
+
+.PHONY: docs
+docs: $(generated_docs)
+
+%.html: %.txt
+	$(ASCIIDOC) -a revnumber=$(version) -a toc -b xhtml11 $<
+
+%.xml: %.txt
+	$(ASCIIDOC) -a revnumber=$(version) -d manpage -b docbook $<
+
+cs.1: MANUAL.xml
+	$(XSLTPROC) --nonet $(MANPAGE_XSL) $<
+
+.PHONY: check-syntax
+check-syntax:
+	$(CC) $(all_cppflags) -I. $(all_cflags) -S -o /dev/null $(CHK_SOURCES)
+
+-include .deps/*.d

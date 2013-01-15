@@ -1,0 +1,1012 @@
+CS(1)
+=====
+:man source:  cs
+:man version: {revnumber}
+:man manual:  cs Manual
+
+
+Name
+----
+
+cs - a fast C/C++ compiler cache integrated with CloudSourcery.com
+
+
+Synopsis
+--------
+
+[verse]
+*cs* ['options']
+*cs* 'compiler' ['compiler options']
+'compiler' ['compiler options']                   (via symbolic link)
+
+
+Description
+-----------
+
+cs is a command line client for Cloud Sourcery.  It is based on "ccache", still
+available from http://ccache.samba.org.
+
+In offline mode, it speeds up recompilation by caching the result of
+previous compilations and detecting when the same compilation is being done
+again. Supported languages are C, C\+\+, Objective-C and Objective-C++.
+
+In online mode, it can speed up recompilation by caching compilations "in the
+cloud", and sharing the cache with other users of the service.  The compile
+history can then be explored in a browser at http://www.cloudsourcery.com.
+
+cs has been carefully written to always produce exactly the same compiler
+output that you would get without the cache. The only way you should be able to
+tell that you are using cs is the speed. Currently known exceptions to this
+goal are listed under <<_bugs,BUGS>>. If you ever discover an undocumented case
+where cs changes the output of your compiler, please let us know.
+
+
+Features
+~~~~~~~~
+
+* Keeps statistics on hits/misses.
+* Automatic cache size management.
+* Can cache compilations that generate warnings.
+* Easy installation.
+* Low overhead.
+* Optionally uses hard links where possible to avoid copies.
+* Optionally compresses files in the cache to reduce disk space.
+* Compile history recorded in the cloud.
+
+
+Limitations
+~~~~~~~~~~~
+
+* Only knows how to cache the compilation of a single
+  C/C\+\+/Objective-C/Objective-C++ file. Other types of compilations
+  (multi-file compilation, linking, etc) will silently fall back to running the
+  real compiler.
+* Only works with GCC and compilers that behave similar enough.
+* Some compiler flags are not supported. If such a flag is detected, cs
+  will silently fall back to running the real compiler.
+
+
+Run modes
+---------
+
+There are two ways to use cs. You can either prefix your compilation
+commands with *cs* or you can let cs masquerade as the compiler by
+creating a symbolic link (named as the compiler) to cs. The first method is
+most convenient if you just want to try out cs or wish to use it for some
+specific projects. The second method is most useful for when you wish to use
+cs for all your compilations.
+
+To use the first method, just make sure that *cs* is in your *PATH*.
+
+To use the symlinks method, do something like this:
+
+-------------------------------------------------------------------------------
+cp cs /usr/local/bin/
+ln -s cs /usr/local/bin/gcc
+ln -s cs /usr/local/bin/g++
+ln -s cs /usr/local/bin/cc
+ln -s cs /usr/local/bin/c++
+-------------------------------------------------------------------------------
+
+And so forth. This will work as long as the directory with symlinks comes
+before the path to the compiler (which is usually in +/usr/bin+). After
+installing you may wish to run ``which gcc'' to make sure that the correct link
+is being used.
+
+WARNING: The technique of letting cs masquerade as the compiler works well,
+but currently doesn't interact well with other tools that do the same thing.
+See <<_using_cs_with_other_compiler_wrappers,USING CS WITH OTHER
+COMPILER WRAPPERS>>.
+
+WARNING: Do not use a hard link, use a symbolic link. A hard link will cause
+``interesting'' problems.
+
+Options
+-------
+
+These options only apply when you invoke cs as ``cs''. When invoked as
+a compiler (via a symlink as described in the previous section), the normal
+compiler options apply and you should refer to the compiler's documentation.
+
+*-c, --cleanup*::
+
+    Clean up the cache by removing old cached files until the specified file
+    number and cache size limits are not exceeded. This also recalculates the
+    cache file count and size totals. Normally, there is no need to initiate
+    cleanup manually as cs keeps the cache below the specified limits at
+    runtime and keeps statistics up to date on each compilation. Forcing a
+    cleanup is mostly useful if you manually modify the cache contents or
+    believe that the cache size statistics may be inaccurate.
+
+*-C, --clear*::
+
+    Clear the entire cache, removing all cached files, but keeping the
+    configuration file.
+
+*-F, --max-files*='N'::
+
+    Set the maximum number of files allowed in the cache. Use 0 for no limit.
+    The value is stored in a configuration file in the cache directory and
+    applies to all future compilations.
+
+*-h, --help*::
+
+    Print an options summary page.
+
+*-M, --max-size*='SIZE'::
+
+    Set the maximum size of the files stored in the cache. 'SIZE' should be a
+    number followed by an optional suffix: k, M, G, T (decimal), Ki, Mi, Gi or
+    Ti (binary). The default suffix is G. Use 0 for no limit. The value is
+    stored in a configuration file in the cache directory and applies to all
+    future compilations.
+
+*-o, --set-config*='KEY=VALUE'::
+
+    Set configuration 'KEY' to 'VALUE'. See <<_configuration,CONFIGURATION>>
+    for more information.
+
+*-p, --print-config*::
+
+    Print current configuration options and from where they originate
+    (environment variable, configuration file or compile-time default).
+
+*-s, --show-stats*::
+
+    Print the current statistics summary for the cache.
+
+*-V, --version*::
+
+    Print version and copyright information.
+
+*-z, --zero-stats*::
+
+    Zero the cache statistics (but not the configuration options).
+
+
+Extra options
+-------------
+
+When run as a compiler, cs usually just takes the same command line options
+as the compiler you are using. The only exception to this is the option
+*--cs-skip*. That option can be used to tell cs to avoid interpreting
+the next option in any way and to pass it along to the compiler as-is.
+
+The reason this can be important is that cs does need to parse the command
+line and determine what is an input filename and what is a compiler option, as
+it needs the input filename to determine the name of the resulting object file
+(among other things). The heuristic cs uses when parsing the command line
+is that any argument that exists as a file is treated as an input file name. By
+using *--cs-skip* you can force an option to not be treated as an input
+file name and instead be passed along to the compiler as a command line option.
+
+Another case where *--cs-skip* can be useful is if cs interprets an
+option specially but shouldn't, since the option has another meaning for your
+compiler than what cs thinks.
+
+
+Configuration
+-------------
+
+cs's default behavior can be overridden by configuration file settings,
+which in turn can be overridden by environment variables with names starting
+with *CS_*. cs normally reads configuration from two files: first a
+system-level configuration file and secondly a cache-specific configuration
+file. The priority of configuration settings is as follows (where 1 is
+highest):
+
+1. Environment variables.
+2. The cache-specific configuration file *<csdir>/cs.conf* (typically
+   *$HOME/.cscache/cs.conf*).
+3. The system-wide configuration file *<sysconfdir>/cs.conf* (typically
+   */etc/cs.conf* or */usr/local/etc/cs.conf*).
+4. Compile-time defaults.
+
+As a special case, if the environment variable *CS_CONFIGPATH* is set,
+cs reads configuration from the specified path instead of the default
+paths.
+
+
+Configuration file syntax
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Configuration files are in a simple ``key = value'' format, one setting per
+line. Lines starting with a hash sign are comments. Blank lines are ignored, as
+is whitespace surrounding keys and values. Example:
+
+-------------------------------------------------------------------------------
+# Set maximum cache size to 10 GB:
+max_size = 10G
+-------------------------------------------------------------------------------
+
+Boolean values
+~~~~~~~~~~~~~~
+
+Some settings are boolean values (i.e. truth values). In a configuration file,
+such values must be set to the string *true* or *false*. For the corresponding
+environment variables, the semantics are a bit different: a set environment
+variable means ``true'' regardless of the value (even if set to the empty
+string), and an unset environment variable means ``false''. Each boolean
+environment variable also has a negated form starting with *CS_NO*. For
+example, *CS_COMPRESS* can be set to force compression and
+*CS_NOCOMPRESS* can be set to force no compression.
+
+
+Configuration settings
+~~~~~~~~~~~~~~~~~~~~~~
+
+Below is a list of available configuration settings. The corresponding
+environment variable name is indicated in parentheses after each configuration
+setting key. Boolean options are indicated with ``[boolean]''
+
+*base_dir* (*CS_BASEDIR*)::
+
+    This setting should be an absolute path to a directory. cs then
+    rewrites absolute paths into relative paths before computing the hash that
+    identifies the compilation, but only for paths under the specified
+    directory. If set to the empty string (which is the default), no rewriting
+    is done. See also the discussion under
+    <<_compiling_in_different_directories,COMPILING IN DIFFERENT DIRECTORIES>>.
+
+*cache_dir* (*CS_CACHE_DIR*)::
+
+    This setting specifies where cs will keep its cached compiler outputs.
+    It will only take effect if set in the system-wide configuration file, the
+    home directory configuration file ($HOME/.cs.conf) or as an environment
+    variable. The default is *$HOME/.cscache*.
+
+*cache_dir_levels* (*CS_NLEVELS*)::
+
+    This setting allows you to choose the number of directory levels in the
+    cache directory. The default is 2. The minimum is 1 and the maximum is 8.
+
+*cloud_key* (*CS_KEY*)::
+
+    This setting must contain your unique user key. The online features will
+    not work without this setting. You can obtain a key from
+    *http://www.cloudsourcery.com/cs_keys*.
+    If you do not set this option then cs will give a warning message every
+    time it is used. You can slience this warning by enabling offline mode.
+
+*cloud_mode* (*CS_CLOUD_MODE*)::
+
+    This setting controls how cs access the cloud cache servers. Best speed
+    is usually achieved when the local cache is fully populated, but the
+    cloud cache can accelerate the initial build of a project. There are
+    currently four settings:
++
+--
+*offline*::
+    Don't use the cloud servers at all. In this mode cs acts much like ccache.
+*remote*::
+    Prefer the cloud cache. Only run the local compiler in the event of a
+    cache miss. This is probably the best setting within AWS EC2 servers, or
+    if local power-usage is an issue.
+*local*::
+    Don't check the cloud cache at all; do all compilations locally. Continue
+    to use the cloud servers for all other features.
+*race*::
+    Check the cloud cache and run the local compiler simultaneously.
+    If the cloud cache responds before the compiler completes then the
+    compiler processes are killed. This should ensure the best possible speed,
+    but may not be better than "remote" on slow machines or with very small
+    ping times to the cloud servers. With parallel make, this may cause
+    excessive CPU or memory use, and also result in slow-down.
+*smart*::
+    Attempt to choose between the above modes intelligently, based on the
+    current machine load-average. This ought to achieve the best balance
+    between machine load and network latency for parallel make builds.
+    This is the default.
+--
+
+*cloud_server* (*CS_SERVER*)::
+
+    This setting specifies what Cloud Sourcery server to use. It shouldn't
+    be necessary to change this unless you wish to route the connection
+    through a tunnel. The default value is *api.cloudsourcery.com:443*.
+    Use the enviromnent variable *https_proxy* to route via a proxy.
+
+*compiler* (*CS_CC*)::
+
+    This setting can be used to force the name of the compiler to use. If set
+    to the empty string (which is the default), cs works it out from the
+    command line.
+
+*compiler_check* (*CS_COMPILERCHECK*)::
+
+    The setting can be used to control how cs detects the toolchain you are
+    using. It is necessary to differentiate between toolchains because a
+    different compiler, for instance, will produce a different output for
+    the same input source, and the cache must not confuse them.
++
+--
+Unlike ccache (in which only the top-level 'gcc' is ever scanned), cs
+scans and hashes *all* the significant files in a toolchain. This is
+important because cs must be able to uniquely identify a toolchain
+across many users' installations, whereas ccache need only track one
+installation.
+
+However, since this detailed scan is a relatively slow process, cs only
+does it once, when it first encounters a new compiler. The results are
+cached, and the mtime and size of the top-level 'gcc' is used to
+identify the cached hashes on subsequent invocations.
+
+Therefore, if you upgrade part of your toolchain without updating the
+top-level 'gcc' you should either wipe your cache (cs -C), or set
+CS_COMPILERCHECK=content for at least one compile (one should be
+sufficient to reset the cached toolchain hashes).
+
+Also unlike ccache, files cached in 'content' mode are
+compatible with files cached in 'mtime' mode (they have the same hash).
+Files cached in 'none' mode and '<command string>' mode remain
+incompatible with all other modes (their hashes are different).
+
+*content*::
+    Hash the content of all the compiler binaries. This makes cs very slightly
+    slower compared to the *mtime* setting, but makes it cope better with
+    compiler upgrades during a build bootstrapping process.
+*mtime*::
+    Detect the toolchain using the compiler's mtime and size, which is fast.
+    This is the default.
+*none*::
+    Don't hash anything. This may be good for situations where you can safely
+    use the cached results even though the compiler's mtime or size has changed
+    (e.g. if the compiler is built as part of your build system and the
+    compiler's source has not changed, or if the compiler only has changes that
+    don't affect code generation). You should only use the *none* setting if
+    you know what you are doing.
+    This setting is not compatible with the cloud cache and so implies
+    cloud_mode=offline.
+_a command string_::
+    Hash the standard output and standard error output of the specified
+    command. The string will be split on whitespace to find out the command and
+    arguments to run. No other interpretation of the command string will be
+    done, except that the special word *%compiler%* will be replaced with the
+    path to the compiler. Several commands can be specified with semicolon as
+    separator.
+    This setting is not compatible with the cloud cache and so implies
+    cloud_mode=offline.
+    Examples:
++
+--
+* +%compiler% -v+
+* +%compiler% -dumpmachine; %compiler% -dumpversion+
+
+You should make sure that the specified command is as fast as possible since it
+will be run once for each cs invocation.
+
+Identifying the compiler using a command is useful if you want to avoid cache
+misses when the compiler has been rebuilt but not changed.
+
+Another case is when the compiler (as seen by cs) actually isn't the real
+compiler but another compiler wrapper -- in that case, the default *mtime*
+method will hash the mtime and size of the other compiler wrapper, which means
+that cs won't be able to detect a compiler upgrade. Using a suitable
+command to identify the compiler is thus safer, but it's also slower, so you
+should consider continue using the *mtime* method in combination with
+the *prefix_command* setting if possible. See
+<<_using_cs_with_other_compiler_wrappers,USING CS WITH OTHER COMPILER
+WRAPPERS>>.
+--
+--
+
+*compression* (*CS_COMPRESS*) [boolean]::
+
+    If true, cs will compress object files and other compiler output it
+    puts in the cache. However, this setting has no effect on how files are
+    retrieved from the cache; compressed and uncompressed results will still be
+    usable regardless of this setting. The default is false.
+
+*compression_level* (*CS_COMPRESSLEVEL*)::
+
+    This setting determines the level at which cs will compress object
+    files. It only has effect if *compression* is enabled. The value defaults
+    to 6, and must be no lower than 1 (fastest, worst compression) and no
+    higher than 9 (slowest, best compression).
+
+*cpp_extension* (*CS_EXTENSION*)::
+
+    This setting can be used to force a certain extension for the intermediate
+    preprocessed file. The default is to automatically determine the extension
+    to use for intermediate preprocessor files based on the type of file being
+    compiled, but that sometimes doesn't work. For example, when using the
+    ``aCC'' compiler on HP-UX, set the cpp extension to *i*.
+
+*direct_mode* (*CS_DIRECT*) [boolean]::
+
+    If true, the direct mode will be used. The default is false. See
+    <<_the_direct_mode,THE DIRECT MODE>>.
+
+*disable* (*CS_DISABLE*) [boolean]::
+
+    When true, cs will just call the real compiler, bypassing the cache
+    completely. The default is false.
+
+*extra_files_to_hash* (*CS_EXTRAFILES*)::
+
+    This setting is a list of paths to files that cs will include in the
+    the hash sum that idetifies the build. The list separator is semicolon on
+    Windows systems and colon on other systems.
+
+*hard_link* (*CS_HARDLINK*) [boolean]::
+
+    If true, cs will attempt to use hard links from the cache directory
+    when creating the compiler output rather than using a file copy. Using hard
+    links may be slightly faster in some situations, but can confuse programs
+    like ``make'' that rely on modification times. Another thing to keep in
+    mind is that if the resulting object file is modified in any way, this
+    corrupts the cached object file as well. Hard links are never made for
+    compressed cache files. This means that you should not enable compression
+    if you want to use hard links. The default is false.
+
+*hash_dir* (*CS_HASHDIR*) [boolean]::
+
+    If true, cs will include the current working directory in the hash that
+    is used to distinguish two compilations. This prevents a problem with the
+    storage of the current working directory in the debug info of a object
+    file, which can lead cs to give a cached object file that has the
+    working directory in the debug info set incorrectly. This option is off by
+    default as the incorrect setting of this debug info rarely causes problems.
+    If you strike problems with GDB not using the correct directory then enable
+    this option.
+
+*log_file* (*CS_LOGFILE*)::
+
+    If set to a file path, cs will write information on what it is doing to
+    the specified file. This is useful for tracking down problems.
+
+*stats* (*CS_STATS*) [boolean]::
+
+    If true, cs will update the statistics counters on each compilation.
+    The default is true.
+
+*path* (*CS_PATH*)::
+
+    If set, cs will search directories in this list when looking for the
+    real compiler. The list separator is semicolon on Windows systems and colon
+    on other systems. If not set, cs will look for the first executable
+    matching the compiler name in the normal *PATH* that isn't a symbolic link
+    to cs itself.
+
+*prefix_command* (*CS_PREFIX*)::
+
+    This option adds a list of prefixes (separated by space) to the command
+    line that cs uses when invoking the compiler. See also
+    <<_using_cs_with_other_compiler_wrappers,USING CS WITH OTHER
+    COMPILER WRAPPERS>>.
+
+*read_only* (*CS_READONLY*) [boolean]::
+
+    If true, cs will attempt to use existing cached object files, but it
+    will not to try to add anything new to the cache. If you are using this
+    because your cs directory is read-only, then you need to set
+    *temporary_dir* as otherwise cs will fail to create temporary files.
+
+*reache* (*CS_RECACHE*) [boolean]::
+
+    If true, cs will not use any previously stored result. New results will
+    still be cached, possibly overwriting any pre-existing results.
+
+*run_second_cpp* (*CS_CPP2*) [boolean]::
+
+    If true, cs will not use the optimisation of avoiding the second call
+    to the preprocessor by compiling the preprocessed output that was used for
+    finding the hash in the case of a cache miss. This is primarily a debugging
+    option, although it is possible that some unusual compilers will have
+    problems with compiling the preprocessed output, in which case this option
+    could allow cs to be used anyway.
+
+*sloppiness* (*CS_SLOPPINESS*)::
+
+    By default, cs tries to give as few false cache hits as possible.
+    However, in certain situations it's possible that you know things that
+    cs can't take for granted. This setting makes it possible to tell
+    cs to relax some checks in order to increase the hit rate. The value
+    should be a comma-separated string with options. Available options are:
++
+--
+*file_macro*::
+    Ignore *\_\_FILE__* being present in the source.
+*include_file_mtime*::
+    By default, cs will not cache a file if it includes a header whose
+    mtime is too new.  This option disables that check.
+*time_macros*::
+    Ignore *\_\_DATE\__* and *\_\_TIME__* being present in the source code.
+--
++
+See the discussion under <<_troubleshooting,TROUBLESHOOTING>> for more
+information.
+
+*temporary_dir* (*CS_TEMPDIR*)::
+
+    This setting specifies where cs will put temporary files. The default
+    is *<cache_dir>/tmp*.
++
+*umask* (*CS_UMASK*)::
+
+    This setting specifies the umask for cs and all child processes (such
+    as the compiler). This is mostly useful when you wish to share your cache
+    with other users. Note that this also affects the file permissions set on
+    the object files created from your compilations.
+
+*unify* (*CS_UNIFY*) [boolean]::
+
+    If true, cs will use a C/C++ unifier when hashing the preprocessor
+    output if the *-g* option is not used. The unifier is slower than a normal
+    hash, so setting this environment variable loses a little bit of speed, but
+    it means that cs can take advantage of not recompiling when the changes
+    to the source code consist of reformatting only. Note that enabling the
+    unifier changes the hash, so cached compilations produced when the unifier
+    is enabled cannot be reused when the unifier is disabled, and vice versa.
+    Enabling the unifier may result in incorrect line number information in
+    compiler warning messages and expansions of the *\_\_LINE__* macro. Also
+    note that enabling the unifier implies turning off the direct mode.
+
+
+Cache size management
+---------------------
+
+By default, cs has a five gigabyte limit on the total size of files in the
+cache and no maximum number of files. You can set different limits using the
+*-M*/*--max-size* and *-F*/*--max-files* options. Use *cs -s/--show-stats*
+to see the cache size and the currently configured limits (in addition to other
+various statistics).
+
+
+Cache compression
+-----------------
+
+cs can optionally compress all files it puts into the cache using the
+compression library zlib. While this may involve a tiny performance slowdown,
+it increases the number of files that fit in the cache. You can turn on
+compression with the *compression* configuration setting and you can also tweak
+the compression level with *compression_level*.
+
+
+How cs works
+------------
+
+The basic idea is to detect when you are compiling exactly the same code a
+second time and reuse the previously produced output. The detection is done by
+hashing different kinds of information that should be unique for the
+compilation and then using the hash sum to identify the cached output. cs
+uses MD4, a very fast cryptographic hash algorithm, for the hashing. (MD4 is
+nowadays too weak to be useful in cryptographic contexts, but it should be safe
+enough to be used to identify recompilations.) On a cache hit, cs is able
+to supply all of the correct compiler outputs (including all warnings,
+dependency file, etc) from the cache.
+
+cs has two ways of doing the detection:
+
+* the *direct mode*, where cs hashes the source code and include files
+  directly
+* the *preprocessor mode*, where cs runs the preprocessor on the source
+  code and hashes the result
+
+The direct mode is generally faster since running the preprocessor has some
+overhead.
+
+
+Common hashed information
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For both modes, the following information is included in the hash:
+
+* the extension used by the compiler for a file with preprocessor output
+  (normally *.i* for C code and *.ii* for C++ code)
+* the result of the *compiler_check* custom command, if one is set
+* the name of the compiler
+* the current directory (if the *hash_dir* setting is enabled)
+* contents of files specified by the *extra_files_to_hash* setting (if any)
+
+Unlike ccache, the toolchain identity is not included directly in the
+hashed data. Instead the toolchain hash is appended to the compile hash.
+By this means Cloud Sourcery can identify compilations where the only
+difference is the toolchain used. This has a number of interesting
+possibilities; for example, the cloud cache can identify toolchains that
+compare different, but always produce the same output, and use this
+knowledge to return a greater number of cache hits (this is particularly
+interesting when one of the compilers is a cross-compiler, and one is a
+native compiler on a slow target).
+
+
+The direct mode
+~~~~~~~~~~~~~~~
+
+In the direct mode, the hash is formed of the common information and:
+
+* the input source file
+* the command line options
+
+Based on the hash, a data structure called ``manifest'' is looked up in the
+cache. The manifest contains:
+
+* references to cached compilation results (object file, dependency file, etc)
+  that were produced by previous compilations that matched the hash
+* paths to the include files that were read at the time the compilation results
+  were stored in the cache
+* hash sums of the include files at the time the compilation results were
+  stored in the cache
+
+The current contents of the include files are then hashed and compared to the
+information in the manifest. If there is a match, cs knows the result of
+the compilation. If there is no match, cs falls back to running the
+preprocessor. The output from the preprocessor is parsed to find the include
+files that were read. The paths and hash sums of those include files are then
+stored in the manifest along with information about the produced compilation
+result.
+
+There is a catch with the direct mode: header files that were used by the
+compiler are recorded, but header files that were *not* used, but would have
+been used if they existed, are not. So, when ccache checks if a result can be
+taken from the cache, it currently can't check if the existence of a new header
+file should invalidate the result. This is why the direct mode is off by
+default. In practice, the direct mode is safe to use in the absolute majority
+of cases.
+
+The direct mode will be disabled if any of the following holds:
+
+* the configuration setting *direct_mode* is false (which is the default)
+* a modification time of one of the include files is too new (needed to avoid a
+  race condition)
+* the unifier is enabled (the configuration setting *unify* is true)
+* a compiler option not supported by the direct mode is used:
+** a *-Wp,_X_* compiler option other than *-Wp,-MD,_path_* and
+   *-Wp,-MMD,_path_*
+** *-Xpreprocessor*
+* the string ``\_\_TIME__'' is present outside comments and string literals in
+  the source code
+
+
+The preprocessor mode
+~~~~~~~~~~~~~~~~~~~~~
+
+In the preprocessor mode, the hash is formed of the common information and:
+
+* the preprocessor output from running the compiler with *-E*
+* the command line options except options that affect include files (*-I*,
+  *-include*, *-D*, etc; the theory is that these options will change the
+  preprocessor output if they have any effect at all)
+* any standard error output generated by the preprocessor
+
+Based on the hash, the cached compilation result can be looked up directly in
+the cache.
+
+
+Compiling in different directories
+----------------------------------
+
+Some information included in the hash that identifies a unique compilation may
+contain absolute paths:
+
+* The preprocessed source code may contain absolute paths to include files if
+  the compiler option *-g* is used or if absolute paths are given to *-I* and
+  similar compiler options.
+* Paths specified by compiler options (such as *-I*, *-MF*, etc) may be
+  absolute.
+* The source code file path may be absolute, and that path may substituted for
+  *\_\_FILE__* macros in the source code or included in warnings emitted to
+  standard error by the preprocessor.
+
+This means that if you compile the same code in different locations, you can't
+share compilation results between the different build directories since you get
+cache misses because of the absolute build directory paths that are part of the
+hash. To mitigate this problem, you can specify a ``base directory'' in the
+configuration setting *base_dir* to an absolute path to the directory. cs
+will then rewrite absolute paths that are under the base directory (i.e., paths
+that have the base directory as a prefix) to relative paths when constructing
+the hash. A typical path to use as the base directory is your home directory or
+another directory that is a parent of your build directories. (Don't use +/+ as
+the base directory since that will make cs also rewrite paths to system
+header files, which doesn't gain anything.)
+
+The drawbacks of using a base directory are:
+
+* If you specify an absolute path to the source code file, *\_\_FILE__* macros
+  will be expanded to a relative path instead.
+* If you specify an absolute path to the source code file and compile with
+  *-g*, the source code path stored in the object file may point to the wrong
+  directory, which may prevent debuggers like GDB from finding the source code.
+  Sometimes, a work-around is to change the directory explicitly with the
+  ``cd'' command in GDB.
+
+
+Precompiled headers
+-------------------
+
+cs has support for GCC's precompiled headers. However, you have to do some
+things to make it work properly:
+
+* You must set *sloppiness* to *time_macros*. The reason is that cs can't
+  tell whether *\_\_TIME\__* or *\_\_DATE__* is used when using a precompiled
+  header.
+* You must either:
++
+--
+** use the *-include* compiler option to include the precompiled header
+   (i.e., don't use *#include* in the source code to include the header); or
+** (for the Clang compiler) use the *-include-pch* compiler option to include
+   the PCH file generated from the precompiled header; or
+** add the *-fpch-preprocess* compiler option when compiling.
+
+If you don't do this, either the non-precompiled version of the header file
+will be used (if available) or cs will fall back to running the real
+compiler and increase the statistics counter ``preprocessor error'' (if the
+non-precompiled header file is not available).
+--
+
+
+Sharing a local cache
+---------------------
+
+All Cloud Sourcery users automatically share the cloud cache, but accessing
+a remote cache inevitably incurs network latency. This is part of the reason
+files are cached locally, as well as remotely. See also
+<<_optimizing_cloud_cache_efficiency,OPTIMIZING CLOUD CACHE EFFICIENCY>>.
+
+A group of developers can increase the cache hit rate by sharing a local cache
+directory. To share a cache without unpleasant side effects, the following
+conditions should to be met:
+
+* Use the same cache directory.
+* Make sure that the configuration setting *hard_link* is false (which is the
+  default).
+* Make sure that all users are in the same group.
+* Set the configuration setting *umask* to 002. This ensures that cached files
+  are accessible to everyone in the group.
+* Make sure that all users have write permission in the entire cache directory
+  (and that you trust all users of the shared cache).
+* Make sure that the setgid bit is set on all directories in the cache. This
+  tells the filesystem to inherit group ownership for new directories. The
+  command ``find $CS_CACHE_DIR -type d | xargs chmod g+s'' might be useful for
+  this.
+
+The reason to avoid the hard link mode is that the hard links cause unwanted
+side effects, as all links to a cached file share the file's modification
+timestamp. This results in false dependencies to be triggered by
+timestamp-based build systems whenever another user links to an existing file.
+Typically, users will see that their libraries and binaries are relinked
+without reason.
+
+You may also want to make sure that a base directory is set appropriately, as
+discussed in a previous section.
+
+
+Sharing a cache on NFS
+----------------------
+
+It is possible to put the cache directory on an NFS filesystem (or similar
+filesystems), but keep in mind that:
+
+* Having the cache on NFS may slow down compilation. Make sure to do some
+  benchmarking to see if it's worth it.
+* cs hasn't been tested very thoroughly on NFS.
+
+A tip is to set *temporary_dir* to a directory on the local host to avoid NFS
+traffic for temporary files.
+
+
+Optimizing cloud cache efficiency
+---------------------------------
+
+Cloud Sourcery aims to reduce the time it takes to access the cloud cache
+to the absolute minimum, but, inevitably, there will always be network
+latency (and bandwidth) to allow for.
+
+Cloud Sourcery does two things to mitigate this problem:
+
+1. cs retains ccache's lightening fast local caching capabilities, so it
+   is not necessary to access the cloud cache as often.
+2. cs spawns a background task to handle whatever network transactions
+   are needed *after* it has returned the compile result so that it does
+   not hold up the build process unnecessarily (this includes posting
+   usage data and adding files to the cloud cache). Unfortunately, it can do
+   nothing to hide the network latency before the compile result is known
+   (such as retrieving data from the cache).
+
+There are two things you can do to help:
+
+1. Run as many compile jobs in parallel as you can! Ordinarily, running a
+   resource hungry compiler, you'd be limited by the number of processors
+   or amount of memory in your system, but cs is much lighter weight.
+   For example, "make -j" (no number) will run the best with cs.
+2. Make sure you get cache hits by building in the same directory as the
+   files in the cache, or following the hints in
+   <<_compiling_in_different_directories,COMPILING IN DIFFERENT DIRECTORIES>>.
+
+Unfortunately, if you don't get cache hits, "make -j" is probably a bad
+choice as it will end up running the real compiler many times in parallel.
+Future versions of cs/Cloud Sourcery will address this issue.
+
+
+Cloud caching and privacy
+-------------------------
+
+cs uploads all sources, include files, command lines, build results, and
+toolchain binaries into the cloud. This data may appear in your public
+history on the website.
+
+Your key string (downloaded from cloudsourcery.com and configured using
+"cloud_key" or CS_KEY) determines whether the data will be public or private.
+
+If you are not using a private storage key then *DO NOT USE THIS TOOL WITH
+CONFIDENTIAL DATA*.
+
+See *http://www.cloudsourcery.com/privacy* for more information.
+(Cloud Sourcery may not yet provide a private storage option.)
+
+
+Using cs with other compiler wrappers
+-------------------------------------
+
+It is not recommended that you combine cs with other compiler wrappers.
+
+cs needs to scan the entire toolchain to work with the cloud, and using a
+wrapper will prevent this.
+
+However, all ccache's tools for dealing with other wrappers are retained, so
+if you wish to use another wrapper in offline mode then set the *compile_check*
+option to anything other than *mtime* or *content* and go ahead.
+
+
+Using cs alongside ccache
+-------------------------
+
+cs and ccache cache directories are *not* compatible.
+
+However, cs does not use the same default location so the two tools should
+be able to co-exist peacefully.
+
+
+
+Bugs
+----
+
+* cs doesn't handle the GNU Assembler's *.incbin* directive correctly. This
+  directive can be embedded in the source code inside an *__asm__* statement in
+  order to include a file verbatim in the object file. If the included file is
+  modified, cs doesn't pick up the change since the inclusion isn't done by
+  the preprocessor. A workaround of this problem is to set
+  *extra_files_to_hash* to the path of the included file.
+
+
+
+Troubleshooting
+---------------
+
+General
+~~~~~~~
+
+A general tip for getting information about what cs is doing is to enable
+debug logging by setting *log_file*. The log contains executed commands,
+important decisions that cs makes, read and written files, etc. Another way
+of keeping track of what is happening is to check the output of *cs -s*.
+
+
+Performance
+~~~~~~~~~~~
+
+cs has been written to perform well out of the box, but sometimes you may
+have to do some adjustments of how you use the compiler and cs in order to
+improve performance.
+
+Since cs works best when I/O is fast, put the cache directory on a fast
+storage device if possible. Having lots of free memory so that files in the
+cache directory stay in the disk cache is also preferrable.
+
+A good way of monitoring how well cs works is to run *cs -s* before and
+after your build and then compare the statistics counters. Here are some common
+problems and what may be done to increase the hit rate:
+
+* If ``cache hit (preprocessed)'' has been incremented instead of ``cache hit
+  (direct)'', cs has fallen back to preprocessor mode, which is generally
+  slower. Some possible reasons are:
+** The source code has been modified in such a way that the preprocessor output
+   is not affected.
+** Compiler arguments that are hashed in the direct mode but not in the
+   preprocessor mode have changed (*-I*, *-include*, *-D*, etc) and they didn't
+   affect the preprocessor output.
+** The compiler option *-Xpreprocessor* or *-Wp,_X_* (except *-Wp,-MD,_path_*
+   and *Wp,-MMD,_path_*) is used.
+** This was the first compilation with a new value of the base directory
+   setting.
+** A modification time of one of the include files is too new (created the same
+   second as the compilation is being done). This check is made to avoid a race
+   condition. To fix this, create the include file earlier in the build
+   process, if possible, or set *sloppiness* to *include_file_mtime* if you are
+   willing to take the risk. (The race condition consists of these events: the
+   preprocessor is run; an include file is modified by someone; the new include
+   file is hashed by cs; the real compiler is run on the preprocessor's
+   output, which contains data from the old header file; the wrong object file
+   is stored in the cache.)
+** The *\_\_TIME\__* preprocessor macro is (potentially) being used. cs
+   turns off direct mode if ``\_\_TIME\__'' is present in the source code
+   outside comments and string literals. This is done as a safety measure since
+   the string indicates that a *\_\_TIME\__* macro _may_ affect the output. (To
+   be sure, cs would have to run the preprocessor, but the sole point of
+   the direct mode is to avoid that.) If you know that *\_\_TIME\__* isn't used
+   in practise, or don't care if cs produces objects where *\_\_TIME__* is
+   expanded to something in the past, you can set *sloppiness* to
+   *time_macros*.
+** The *\_\_DATE\__* preprocessor macro is (potentially) being used and the
+   date has changed. This is similar to how *\_\_TIME\__* is handled. If
+   ``\_\_DATE\__'' is present in the source code outside comments and string
+   literals, cs hashes the current date in order to be able to produce the
+   correct object file if the *\_\_DATE\__* macro affects the output. If you
+   know that *\_\_DATE\__* isn't used in practise, or don't care if cs
+   produces objects where *\_\_DATE__* is expanded to something in the past,
+   you can set *sloppiness* to *time_macros*.
+** The *\_\_FILE\__* preprocessor macro is (potentially) being used and the
+   file path has changed. If ``\_\_FILE\__'' is present in the source code
+   outside comments and string literals, cs hashes the current input file
+   path in order to be able to produce the correct object file if the
+   *\_\_FILE\__* macro affects the output. If you know that *\_\_FILE\__* isn't
+   used in practise, or don't care if cs produces objects where
+   *\_\_FILE__* is expanded to the wrong path, you can set *sloppiness* to
+   *file_macro*.
+* If ``cache miss'' has been incremented even though the same code has been
+  compiled and cached before, cs has either detected that something has
+  changed anyway or a cleanup has been performed (either explicitly or
+  implicitly when a cache limit has been reached). Some perhaps unobvious
+  things that may result in a cache miss are usage of *\_\_TIME\__* or
+  *\_\_DATE__* macros, or use of automatically generated code that contains a
+  timestamp, build counter or other volatile information.
+* If ``multiple source files'' has been incremented, it's an indication that
+  the compiler has been invoked on several source code files at once. cs
+  doesn't support that. Compile the source code files separately if possible.
+* If ``unsupported compiler option'' has been incremented, enable debug logging
+  and check which option was rejected.
+* If ``preprocessor error'' has been incremented, one possible reason is that
+  precompiled headers are being used. See <<_precompiled_headers,PRECOMPILED
+  HEADERS>> for how to remedy this.
+* If ``can't use precompiled header'' has been incremented, see
+  <<_precompiled_headers,PRECOMPILED HEADERS>>.
+
+
+Errors when compiling with cs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If compilation doesn't work with cs, but it works without it, one possible
+reason is that the compiler can't compile preprocessed output correctly. A
+workaround that may work is to enable *run_second_cpp**. This will make cache
+misses slower, though, so it is better to find and fix the root cause.
+
+
+Corrupt object files
+~~~~~~~~~~~~~~~~~~~~
+
+It should be noted that cs is susceptible to general storage problems. If a
+bad object file sneaks into the cache for some reason, it will of course stay
+bad. Some possible reasons for erroneous object files are bad hardware (disk
+drive, disk controller, memory, etc), buggy drivers or file systems, a bad
+*prefix_command* or compiler wrapper. If this happens, the easiest way of
+fixing it is this:
+
+1. Build so that the bad object file ends up in the build tree.
+2. Remove the bad object file from the build tree.
+3. Rebuild with *CS_RECACHE* set.
+
+An alternative is to clear the whole cache with *cs -C* if you don't mind
+losing other cached results.
+
+There are no reported issues about cs producing broken object files
+reproducibly. That doesn't mean it can't happen, so if you find a repeatable
+case, please report it.
+
+
+More information
+----------------
+
+Credits, mailing list information, bug reporting instructions, source code,
+etc, can be found at: <http://www.cloudsourcery.com/cs_client>.
+
+
+Author
+------
+
+cs is based on ccache, originally written by Andrew Tridgell and more
+recently developed and maintained by Joel Rosdahl. See AUTHORS.txt or
+AUTHORS.html and <http://ccache.samba.org/credits.html> for a list of
+contributors.
+
+The new Cloud Sourcery features are by Mentor Graphics.

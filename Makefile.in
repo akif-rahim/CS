@@ -1,0 +1,111 @@
+srcdir = @srcdir@
+VPATH = @srcdir@
+
+prefix = @prefix@
+exec_prefix = @exec_prefix@
+bindir = @bindir@
+mandir = @mandir@
+datarootdir = @datarootdir@
+sysconfdir = @sysconfdir@
+installcmd = @INSTALL@
+
+AR = @AR@
+CC = @CC@
+CFLAGS = @CFLAGS@
+CPPFLAGS = @CPPFLAGS@
+EXEEXT = @EXEEXT@
+LDFLAGS = @LDFLAGS@
+LIBS = @LIBS@
+RANLIB = @RANLIB@
+
+all_cflags = -std=gnu99 $(CFLAGS)
+all_cppflags = @DEFS@ @extra_cppflags@ -DSYSCONFDIR=$(sysconfdir) -I. -I$(srcdir) $(CPPFLAGS)
+all_ldflags = @extra_ldflags@ $(LDFLAGS)
+extra_libs = @extra_libs@
+
+base_sources = \
+    ccache.c mdfour.c hash.c execute.c util.c args.c stats.c version.c \
+    cleanup.c snprintf.c unify.c manifest.c hashtable.c hashtable_itr.c \
+    murmurhashneutral2.c hashutil.c getopt_long.c exitfn.c lockfile.c \
+    counters.c language.c compopt.c conf.c cloud.c tool_id.c daemon.c
+base_objs = $(base_sources:.c=.o)
+
+ccache_sources = main.c $(base_sources)
+ccache_objs = $(ccache_sources:.c=.o)
+
+zlib_sources = \
+    zlib/adler32.c zlib/crc32.c zlib/deflate.c zlib/gzclose.c zlib/gzlib.c \
+    zlib/gzread.c zlib/gzwrite.c zlib/inffast.c zlib/inflate.c \
+    zlib/inftrees.c zlib/trees.c zlib/zutil.c
+zlib_objs = $(zlib_sources:.c=.o)
+
+test_suites = @test_suites@
+test_sources = test/main.c test/framework.c test/util.c $(test_suites)
+test_objs = $(test_sources:.c=.o)
+
+all_sources = $(ccache_sources) $(test_sources)
+all_objs = $(ccache_objs) $(test_objs) $(zlib_objs)
+
+files_to_clean = $(all_objs) cs$(EXEEXT) test/main$(EXEEXT) *~
+files_to_distclean = Makefile config.h config.log config.status
+
+.PHONY: all
+all: cs$(EXEEXT)
+
+cs$(EXEEXT): $(ccache_objs) $(extra_libs)
+	$(CC) $(all_cflags) -o $@ $(ccache_objs) $(all_ldflags) $(extra_libs) $(LIBS)
+
+.PHONY: install
+install: all
+	$(installcmd) -d $(DESTDIR)$(bindir)
+	$(installcmd) -m 755 cs$(EXEEXT) $(DESTDIR)$(bindir)
+	$(installcmd) -d $(DESTDIR)$(mandir)/man1
+	-$(installcmd) -m 644 $(srcdir)/cs.1 $(DESTDIR)$(mandir)/man1/
+
+.PHONY: clean
+clean:
+	rm -f $(files_to_clean)
+
+conf.c: confitems_lookup.c envtoconfitems_lookup.c
+
+zlib/libz.a: $(zlib_objs)
+	$(AR) cr $@ $(zlib_objs)
+	$(RANLIB) $@
+
+.PHONY: perf
+perf: cs$(EXEEXT)
+	$(srcdir)/perf.py --ccache cs$(EXEEXT) $(CC) $(all_cppflags) $(all_cflags) $(srcdir)/ccache.c
+
+.PHONY: test
+test: cs$(EXEEXT) test/main$(EXEEXT)
+	test/main$(EXEEXT)
+	CC='$(CC)' $(srcdir)/test.sh
+
+.PHONY: quicktest
+quicktest: test/main$(EXEEXT)
+	test/main$(EXEEXT)
+
+test/main$(EXEEXT): $(base_objs) $(test_objs) $(extra_libs)
+	$(CC) $(all_cflags) -o $@ $(base_objs) $(test_objs) $(all_ldflags) $(extra_libs) $(LIBS)
+
+test/main.o: test/suites.h
+
+test/suites.h: $(test_suites) Makefile
+	sed -n 's/TEST_SUITE(\(.*\))/SUITE(\1)/p' $(test_suites) >$@
+
+.PHONY: check
+check: test
+
+.PHONY: distclean
+distclean: clean
+	rm -rf $(files_to_distclean)
+
+.PHONY: installcheck
+installcheck: cs$(EXEEXT) test/main$(EXEEXT)
+	test/main$(EXEEXT)
+	CCACHE=$(bindir)/cs CC='$(CC)' $(srcdir)/test.sh
+
+.c.o:
+	$(CC) $(all_cppflags) $(all_cflags) -c -o $@ $<
+
+@include_dev_mk@
