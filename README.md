@@ -13,7 +13,7 @@ previous compilations and detecting when the same compilation is being done
 again. Supported languages are C, C++, Objective-C and Objective-C++.
 
 Please see the manual page and documentation at http://www.cloudsourcery.com
-for more information.
+for more information....
 
 
 Documentation
