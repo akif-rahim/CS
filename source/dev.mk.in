@@ -24,8 +24,7 @@ ifneq ($(shell uname), Darwin)
 endif
 
 generated_docs = \
-    cs.1 AUTHORS.html INSTALL.html LICENSE.html MANUAL.html NEWS.html \
-    README.html
+    cs.1 AUTHORS.html INSTALL.html LICENSE.html MANUAL.html NEWS.html
 built_dist_files = $(generated_docs)
 
 headers = \
@@ -66,7 +65,6 @@ source_dist_files = \
     MANUAL.txt \
     Makefile.in \
     NEWS.txt \
-    README.txt \
     autogen.sh \
     config.guess \
     config.h.in \
