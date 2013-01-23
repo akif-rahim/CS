@@ -145,11 +145,21 @@ if test "$ac_cv_c_extern_inline" != no ; then
               Define to 1 if your compiler supports extern inline)
 fi
 
-m4_include(m4/libcurl.m4)
-LIBCURL_CHECK_CONFIG
+case "$cross_compiling" in
+no)
+    m4_include(m4/libcurl.m4)
+    LIBCURL_CHECK_CONFIG
 
-m4_include(m4/pkg.m4)
-PKG_CHECK_MODULES([LIBJSON],[json])
+    m4_include(m4/pkg.m4)
+    PKG_CHECK_MODULES([LIBJSON],[json])
+    ;;
+yes)
+    LIBCURL="-lcurl -lrt"
+
+    LIBJSON_CFLAGS="-I$(${CC} -print-sysroot)/usr/include/json"
+    LIBJSON_LIBS="-ljson"
+    ;;
+esac
 
 LIBS="$LIBCURL $LIBJSON_LIBS $LIBS"
 CPPFLAGS="$LIBCURL_CPPFLAGS $CPPFLAGS"
