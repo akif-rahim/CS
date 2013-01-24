@@ -80,7 +80,7 @@ static const char USAGE_TEXT[] =
 "See also <http://www.cloudsourcery.com>.\n";
 
 /* Global configuration data. */
-struct conf *conf = NULL
+struct conf *conf = NULL;
 
 /* Where to write configuration changes. */
 char *primary_config_path = NULL;
