@@ -17,7 +17,7 @@
  */
 
 #include "ccache.h"
-// I'm hoping that by adding this line it causes the build to break and the badge shows broken build... FAIL
+This will break the badge and break the build!... FAIL
 struct args *
 args_init(int init_argc, char **init_args)
 {
