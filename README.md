@@ -1,5 +1,5 @@
 [![The Sourcerer Summons Your Build Status](https://ci.cloudsourcery.com/badge/akif-rahim/CS/status.gif)](https://ci.cloudsourcery.com/builds#ci)
-Test
+
 cs README
 =========
 
