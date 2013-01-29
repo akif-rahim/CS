@@ -55,6 +55,6 @@ See also {CS-,}NEWS.{txt,html}.
 License and copyright
 ---------------------
 
-See LICENSE.{txt,html} and AUTHORS.{txt,html}.
+See LICENSE.{txt,html} and AUTHORS.{txt,html}.  Test
 
 
