@@ -17,7 +17,7 @@
  */
 
 #include "ccache.h"
-//This will break the badge and break the build!... FAIL
+This will break the badge and break the build!... FAIL
 struct args *
 args_init(int init_argc, char **init_args)
 {
